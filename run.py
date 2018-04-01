@@ -1,18 +1,21 @@
 import time, datetime, requests, os, json
 import docker
 
+
 def logThis(msg, end='\n'):
-    print(datetime.datetime.now().strftime("%x %H:%M:%S | "+msg), end=end)
+    print(datetime.datetime.now().strftime("%x %H:%M:%S | " + msg), end=end)
+
 
 class Scraper(object):
     def Scrape(self):
         page = requests.get('http://finger.openttd.org/versions.txt')
         if page.status_code == 200:
             self.page = page.text
-            self.data = [] # clean house
+            self.data = []  # clean house
             for data in self.page.splitlines():
                 data = data.split('\t')
-                thisver = {'version': data[0], 'date': data[1], 'branch': data[2], 'tag': (data[3] if len(data) == 4 else None)}
+                thisver = {'version': data[0], 'date': data[1], 'branch': data[2],
+                           'tag': (data[3] if len(data) == 4 else None)}
                 self.data.append(thisver)
             logThis("Scrape succeeded: ", end='')
         else:
@@ -29,37 +32,43 @@ class Scraper(object):
             if buildTarget['version'].startswith('<'):
                 preVersion = buildTarget['version']
 
-                buildTarget['version'] = next((x for x in self.data if x.get('tag', None) == buildTarget['version'][1:-1]), False)['version']  # this should never fail (?)
+                buildTarget['version'] = \
+                next((x for x in self.data if x.get('tag', None) == buildTarget['version'][1:-1]), False)[
+                    'version']  # this should never fail (?)
 
-                print("Target version " + preVersion + " appears to be a metaref, targeting "+buildTarget['version']+" instead")
+                logThis("Target version " + preVersion + " appears to be a metaref, targeting " + buildTarget[
+                    'version'] + " instead")
 
             buildTarget['tags'] = data['tags']  # we tag early so that we can easily compare
 
             if self.knownBuilds.get(target, {}) == buildTarget:
                 # we already have the build, but have we processed it?
                 if self.finishedBuilds.get(target, {}) == buildTarget:
-                    print("Target "+data['branch']+'/'+target+': version '+buildTarget['version']+" already built, skipping")
+                    logThis("Target " + data['branch'] + '/' + target + ': version ' + buildTarget[
+                        'version'] + " already built, skipping")
                     continue
                 else:
-                    print("Build target for " + data['branch'] + '/' + target + ': version ' + buildTarget['version']+" detected as failed, requeuing")
+                    logThis("Build target for " + data['branch'] + '/' + target + ': version ' + buildTarget[
+                        'version'] + " detected as failed, requeuing")
             else:
-                print("New build target for "+data['branch']+'/'+target+': version '+buildTarget['version'])
+                logThis("New build target for " + data['branch'] + '/' + target + ': version ' + buildTarget['version'])
             self.knownBuilds[target] = buildTarget
             self.jobs.append(buildTarget)
             newJobsFlag = True
         self.SaveState()
         if not newJobsFlag:
-            print("No new targets")
+            logThis("No new targets")
         return newJobsFlag
 
     def DispatchJobs(self):
         garbage = []
         for job in self.jobs:
-            logThis("Building "+job['version']+" for "+job['tag']+", tagging as "+','.join(job['tags']))
-            image = self.docker.images.build(path=os.environ.get('DOCKER_BUILDDIR', '/Users/duck/Documents/Workbench/Docker/OpenTTD'),
-                                             rm=True,
-                                             buildargs={'OPENTTD_VERSION': job['version']},
-                                             tag=self.repo+':'+job['version'])
+            logThis("Building " + job['version'] + " for " + job['tag'] + ", tagging as " + ','.join(job['tags']))
+            image = self.docker.images.build(
+                path=os.environ.get('DOCKER_BUILDDIR', '/Users/duck/Documents/Workbench/Docker/OpenTTD'),
+                rm=True,
+                buildargs={'OPENTTD_VERSION': job['version']},
+                tag=self.repo + ':' + job['version'])
             for tag in job['tags']:
                 image.tag(self.repo, tag)
             logThis("done!")
@@ -91,7 +100,6 @@ class Scraper(object):
         with open('builds.json', 'w') as fp:
             json.dump({'known': self.knownBuilds, 'built': self.finishedBuilds}, fp)
 
-
     @classmethod
     def Run(cls, scraper):
         cls.Scrape(scraper)
@@ -101,10 +109,10 @@ class Scraper(object):
             logThis("Processing new jobs")
             cls.DispatchJobs(scraper)
 
-
     def __init__(self):
         self.data = []
-        self.targets = {'stable': {'tags': ['stable', 'latest'], 'branch': 'releases'}, 'testing': {'tags': ['rc'], 'branch': 'releases'}}
+        self.targets = {'stable': {'tags': ['stable', 'latest'], 'branch': 'releases'},
+                        'testing': {'tags': ['rc'], 'branch': 'releases'}}
         self.jobs = []
         self.knownBuilds = {}
         self.finishedBuilds = {}
@@ -116,6 +124,7 @@ class Scraper(object):
                 self.docker.login(os.environ.get('DOCKER_USER', None), os.environ.get('DOCKER_PASS', None))
             except docker.errors.DockerException as e:
                 print(e)
+
 
 if __name__ == '__main__':
     scraper = Scraper()
