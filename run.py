@@ -3,19 +3,19 @@ import docker
 
 
 def logThis(msg, end='\n'):
-    print(datetime.datetime.now().strftime("%x %H:%M:%S | " + msg), end=end)
+    print(datetime.datetime.utcnow().strftime("%x %H:%M:%S | " + msg), end=end)
 
 
 class Scraper(object):
     def Scrape(self):
-        page = requests.get('http://finger.openttd.org/versions.txt')
+        # finger.openttd.org doesn't track the latest releases anymore, rip
+        page = requests.get('https://openttd.ams3.digitaloceanspaces.com/openttd-releases/listing.txt')
         if page.status_code == 200:
             self.page = page.text
             self.data = []  # clean house
             for data in self.page.splitlines():
-                data = data.split('\t')
-                thisver = {'version': data[0], 'date': data[1], 'branch': data[2],
-                           'tag': (data[3] if len(data) == 4 else None)}
+                data = data.split(',')
+                thisver = {'version': data[0], 'date': data[1], 'tag': data[2]}
                 self.data.append(thisver)
             logThis("Scrape succeeded: ", end='')
         else:
@@ -24,34 +24,36 @@ class Scraper(object):
     def Process(self):
         newJobsFlag = False
         for target, data in self.targets.items():
+            allPossibleBuildTargets = list(x for x in self.data
+                                if x.get('tag', None) == data.get('tag')
+                                and data.get('search', '').upper() in x.get('version').upper()
+                                )
 
-            buildTarget = next((x for x in self.data if x.get('tag', None) == target), False)
-            if not buildTarget:
+            buildTarget = max(allPossibleBuildTargets, key=(lambda key: datetime.datetime.strptime(key['date'], "%Y-%m-%d %H:%M UTC")))
+            newestBuildTarget = max(self.data, key=(lambda key: datetime.datetime.strptime(key['date'], "%Y-%m-%d %H:%M UTC")))
+            if buildTarget is None:
                 continue
 
-            if buildTarget['version'].startswith('<'):
+            if buildTarget != newestBuildTarget:
                 preVersion = buildTarget['version']
+                buildTarget['version'] = newestBuildTarget['version']
 
-                buildTarget['version'] = \
-                next((x for x in self.data if x.get('tag', None) == buildTarget['version'][1:-1]), False)[
-                    'version']  # this should never fail (?)
-
-                logThis("Target version " + preVersion + " appears to be a metaref, targeting " + buildTarget[
+                logThis("Target version " + preVersion + " appears to be outdated, targeting " + buildTarget[
                     'version'] + " instead")
 
             buildTarget['tags'] = data['tags']  # we tag early so that we can easily compare
 
             if self.knownBuilds.get(target, {}) == buildTarget:
-                # we already have the build, but have we processed it?
+                # we already have the build, have we processed it?
                 if self.finishedBuilds.get(target, {}) == buildTarget:
-                    logThis("Target " + data['branch'] + '/' + target + ': version ' + buildTarget[
+                    logThis("Target " + target + ': version ' + buildTarget[
                         'version'] + " already built, skipping")
                     continue
                 else:
-                    logThis("Build target for " + data['branch'] + '/' + target + ': version ' + buildTarget[
+                    logThis("Build target for " + target + ': version ' + buildTarget[
                         'version'] + " detected as failed, requeuing")
             else:
-                logThis("New build target for " + data['branch'] + '/' + target + ': version ' + buildTarget['version'])
+                logThis("New build target for " + target + ': version ' + buildTarget['version'])
             self.knownBuilds[target] = buildTarget
             self.jobs.append(buildTarget)
             newJobsFlag = True
@@ -63,7 +65,7 @@ class Scraper(object):
     def DispatchJobs(self):
         garbage = []
         for job in self.jobs:
-            logThis("Building " + job['version'] + " for " + job['tag'] + ", tagging as " + ','.join(job['tags']))
+            logThis("Building " + job['version'] + " for " + ','.join(job['tags']))
             image = self.docker.images.build(
                 path=os.environ.get('DOCKER_BUILDDIR', '/Users/duck/Documents/Workbench/Docker/OpenTTD'),
                 rm=True,
@@ -111,8 +113,9 @@ class Scraper(object):
 
     def __init__(self):
         self.data = []
-        self.targets = {'stable': {'tags': ['stable', 'latest'], 'branch': 'releases'},
-                        'testing': {'tags': ['rc'], 'branch': 'releases'}}
+        self.targets = {'stable': {'tag': 'stable', 'tags': ['stable', 'latest']},
+                        'testing_rc': {'tag': 'testing', 'tags': ['rc'], 'search': 'RC'},
+                        'testing_beta': {'tag': 'testing', 'tags': ['beta'], 'search': 'beta'}}
         self.jobs = []
         self.knownBuilds = {}
         self.finishedBuilds = {}
