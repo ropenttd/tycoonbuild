@@ -1,4 +1,8 @@
-# TycoonBuild
+# TycoonBuild IS DEPRECATED
+
+Please use [cdn\_version\_scraper](https://github.com/ropenttd/cdn_version_scraper) for future projects, and consider migrating if you are using it. This tool will no longer be updated.
+
+
 _A /r/openttd tool_
 
 ### Where are the builds?

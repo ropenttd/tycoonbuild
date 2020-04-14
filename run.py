@@ -1,4 +1,5 @@
-import time, datetime, requests, os, json
+import copy
+import time, datetime, requests, os, json, yaml
 import docker
 
 
@@ -8,16 +9,15 @@ def logThis(msg, end='\n'):
 
 class Scraper(object):
     def Scrape(self):
-        # finger.openttd.org doesn't track the latest releases anymore, rip
-        page = requests.get('https://openttd.ams3.digitaloceanspaces.com/openttd-releases/listing.txt')
+        page = requests.get('https://cdn.openttd.org/openttd-releases/latest.yaml')
         if page.status_code == 200:
             self.page = page.text
             self.data = []  # clean house
-            for data in self.page.splitlines():
-                data = data.split(',')
-                thisver = {'version': data[0], 'date': data[1], 'tag': data[2]}
+            latestVersions = yaml.load(self.page, Loader=yaml.FullLoader).get('latest')
+            for data in latestVersions:
+                thisver = {'version': data.get('version'), 'date': data.get('date'), 'tag': data.get('name')}
                 self.data.append(thisver)
-            logThis("Scrape succeeded: ", end='')
+            logThis("Scrape succeeded")
         else:
             logThis("Scrape failed!")
 
@@ -29,17 +29,21 @@ class Scraper(object):
                                 and data.get('search', '').upper() in x.get('version').upper()
                                 )
 
-            buildTarget = max(allPossibleBuildTargets, key=(lambda key: datetime.datetime.strptime(key['date'], "%Y-%m-%d %H:%M UTC")))
-            newestBuildTarget = max(self.data, key=(lambda key: datetime.datetime.strptime(key['date'], "%Y-%m-%d %H:%M UTC")))
-            if buildTarget is None:
-                continue
+            if len(allPossibleBuildTargets) == 0:
+                succ = False
+                for alternate in data['upgrade']:
+                    copyBuild = self.knownBuilds.get(alternate, False)
+                    allPossibleBuildTargets = [copy.copy(copyBuild)]
+                    if allPossibleBuildTargets[0]:
+                        logThis("Target " + target + ': unavailable, superceded by ' + buildTarget['version'])
+                        allPossibleBuildTargets[0]['tags'] = data['tags']
+                        succ = True
+                        break
+                if not succ:
+                    logThis("Target " + target + ': unavailable and no supercession available, skipping')
+                    break
 
-            if buildTarget != newestBuildTarget:
-                preVersion = buildTarget['version']
-                buildTarget['version'] = newestBuildTarget['version']
-
-                logThis("Target version " + preVersion + " appears to be outdated, targeting " + buildTarget[
-                    'version'] + " instead")
+            buildTarget = max(allPossibleBuildTargets, key=(lambda key: key['date']))
 
             buildTarget['tags'] = data['tags']  # we tag early so that we can easily compare
 
@@ -86,10 +90,17 @@ class Scraper(object):
         self.SaveState()
 
     def LoadState(self):
+        def date_hook(json_dict):
+            for (key, value) in json_dict.items():
+                try:
+                    json_dict[key] = datetime.datetime.strptime(value, "%Y-%m-%d %H:%M:%S%z")
+                except:
+                    pass
+            return json_dict
         try:
             with open('builds.json') as fp:
                 try:
-                    filedata = json.load(fp)
+                    filedata = json.load(fp, object_hook=date_hook)
                     self.knownBuilds = filedata.get('known', {})
                     self.finishedBuilds = filedata.get('built', {})
                     logThis("Loaded builds from builds.json")
@@ -100,7 +111,7 @@ class Scraper(object):
 
     def SaveState(self):
         with open('builds.json', 'w') as fp:
-            json.dump({'known': self.knownBuilds, 'built': self.finishedBuilds}, fp)
+            json.dump({'known': self.knownBuilds, 'built': self.finishedBuilds}, fp, default=str)
 
     @classmethod
     def Run(cls, scraper):
@@ -114,8 +125,9 @@ class Scraper(object):
     def __init__(self):
         self.data = []
         self.targets = {'stable': {'tag': 'stable', 'tags': ['stable', 'latest']},
-                        'testing_rc': {'tag': 'testing', 'tags': ['rc'], 'search': 'RC'},
-                        'testing_beta': {'tag': 'testing', 'tags': ['beta'], 'search': 'beta'}}
+                        'testing_rc': {'tag': 'testing', 'tags': ['rc'], 'search': 'RC', 'upgrade': ['stable']},
+                        'testing_beta': {'tag': 'testing', 'tags': ['beta'], 'search': 'beta',
+                                         'upgrade': ['testing_rc', 'stable']}}
         self.jobs = []
         self.knownBuilds = {}
         self.finishedBuilds = {}
